@@ -227,38 +227,9 @@ function renderHome(app) {
     html += "<li><a data-idx=" + i + ">" + s + "<span class=\"count\">" + count + " topics | " + qaCount + " Q&A</span></a></li>";
   }
   html += "</ul>";
-  if (location.protocol === "file:") {
-    html += "<button class=\"btn btn-primary\" id=\"syncBtn\" style=\"margin-top:16px\">Sync from GitHub</button>";
-  }
   app.innerHTML = html;
 
   // Bind events
-  var syncBtn = document.getElementById("syncBtn");
-  if (syncBtn) {
-    syncBtn.onclick = function() {
-      var btn = this;
-      btn.textContent = "Syncing...";
-      btn.disabled = true;
-      fetch("http://127.0.0.1:18923/sync").then(function(r) { return r.json(); }).then(function(d) {
-        if (d.success) {
-          if (d.message.indexOf("Already up to date") >= 0) {
-            toast("Already up to date");
-          } else {
-            toast("Synced! Reloading...");
-            setTimeout(function() { location.reload(); }, 1500);
-          }
-        } else {
-          toast("Sync failed: " + d.message);
-        }
-        btn.textContent = "Sync from GitHub";
-        btn.disabled = false;
-      }).catch(function() {
-        toast("Sync server not running");
-        btn.textContent = "Sync from GitHub";
-        btn.disabled = false;
-      });
-    };
-  }
   var items = app.querySelectorAll("[data-idx]");
   for (var i = 0; i < items.length; i++) {
     items[i].onclick = function() {
