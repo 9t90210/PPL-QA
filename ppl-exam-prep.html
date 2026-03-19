@@ -90,76 +90,98 @@ function pushToGitHub(btn, newData, changeMsg) {
     if (!token) return;
     setGHToken(token);
   }
+  var origLabel = btn.textContent;
   btn.textContent = "Pushing...";
   btn.disabled = true;
 
-  // Fetch current raw file as template
-  fetch("https://raw.githubusercontent.com/" + GH_REPO + "/main/" + GH_FILE + "?t=" + Date.now())
-  .then(function(r) {
-    if (!r.ok) throw new Error("Failed to fetch file");
-    return r.text();
-  }).then(function(content) {
-    // Replace DATA in the file
-    var ds = content.indexOf("var DATA = {");
-    if (ds === -1) throw new Error("Could not find DATA in file");
-    var js = ds + 11;
-    var bd = 0, je = -1, ins = false, esc = false;
-    for (var ci = js; ci < content.length; ci++) {
-      var ch = content[ci];
-      if (esc) { esc = false; continue; }
-      if (ch === "\\" && ins) { esc = true; continue; }
-      if (ch === '"') { ins = !ins; continue; }
-      if (ins) continue;
-      if (ch === "{") bd++;
-      else if (ch === "}") { bd--; if (bd === 0) { je = ci + 1; break; } }
+  var api = "https://api.github.com/repos/" + GH_REPO;
+  var hdrs = { "Authorization": "token " + token, "Content-Type": "application/json" };
+
+  function check(r, msg) {
+    if (!r.ok) {
+      if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - try again"); }
+      if (r.status === 409 || r.status === 422) throw new Error("Conflict - please reload and try again");
+      throw new Error(msg + " (HTTP " + r.status + ")");
     }
-    if (je === -1) throw new Error("Could not parse DATA");
-    var semi = (content[je] === ";") ? je + 1 : je;
-    var newContent = content.substring(0, ds) + "var DATA = " + JSON.stringify(newData) + ";" + content.substring(semi);
+    return r.json();
+  }
 
-    // Push via Git Data API
-    var api = "https://api.github.com/repos/" + GH_REPO;
-    var hdrs = { "Authorization": "token " + token, "Content-Type": "application/json" };
+  // Step 1: Get current ref and file blob via Git Data API (no CDN cache)
+  fetch(api + "/git/refs/heads/main", { headers: hdrs })
+  .then(function(r) { return check(r, "Failed to get ref"); })
+  .then(function(ref) {
+    var commitSha = ref.object.sha;
+    return fetch(api + "/git/commits/" + commitSha, { headers: hdrs })
+    .then(function(r) { return check(r, "Failed to get commit"); })
+    .then(function(commit) {
+      // Get tree to find file blob SHA
+      return fetch(api + "/git/trees/" + commit.tree.sha, { headers: hdrs })
+      .then(function(r) { return check(r, "Failed to get tree"); })
+      .then(function(tree) {
+        var fileEntry = null;
+        for (var i = 0; i < tree.tree.length; i++) {
+          if (tree.tree[i].path === GH_FILE) { fileEntry = tree.tree[i]; break; }
+        }
+        if (!fileEntry) throw new Error("File not found in repo");
+        // Fetch actual file content via blob API (no CDN cache, no size limit)
+        return fetch(api + "/git/blobs/" + fileEntry.sha, { headers: hdrs })
+        .then(function(r) { return check(r, "Failed to get blob"); })
+        .then(function(blob) {
+          var content = decodeURIComponent(escape(atob(blob.content.replace(/\n/g, ""))));
 
-    return fetch(api + "/git/blobs", {
-      method: "POST", headers: hdrs,
-      body: JSON.stringify({ content: newContent, encoding: "utf-8" })
-    }).then(function(r) {
-      if (!r.ok) {
-        if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - try again"); }
-        throw new Error("Failed to create blob");
-      }
-      return r.json();
-    }).then(function(blob) {
-      return fetch(api + "/git/refs/heads/main", { headers: hdrs }).then(function(r) { return r.json(); }).then(function(ref) {
-        return fetch(api + "/git/commits/" + ref.object.sha, { headers: hdrs }).then(function(r) { return r.json(); }).then(function(commit) {
-          return fetch(api + "/git/trees", {
+          // Step 2: Replace DATA in the file
+          var ds = content.indexOf("var DATA = {");
+          if (ds === -1) throw new Error("Could not find DATA in file");
+          var js2 = ds + 11;
+          var bd = 0, je = -1, ins = false, esc = false;
+          for (var ci = js2; ci < content.length; ci++) {
+            var ch = content[ci];
+            if (esc) { esc = false; continue; }
+            if (ch === "\\" && ins) { esc = true; continue; }
+            if (ch === '"') { ins = !ins; continue; }
+            if (ins) continue;
+            if (ch === "{") bd++;
+            else if (ch === "}") { bd--; if (bd === 0) { je = ci + 1; break; } }
+          }
+          if (je === -1) throw new Error("Could not parse DATA");
+          var semi = (content[je] === ";") ? je + 1 : je;
+          var newContent = content.substring(0, ds) + "var DATA = " + JSON.stringify(newData) + ";" + content.substring(semi);
+
+          // Step 3: Create new blob, tree, commit, and update ref
+          return fetch(api + "/git/blobs", {
             method: "POST", headers: hdrs,
-            body: JSON.stringify({ base_tree: commit.tree.sha, tree: [{ path: GH_FILE, mode: "100644", type: "blob", sha: blob.sha }] })
-          }).then(function(r) { return r.json(); }).then(function(tree) {
-            return fetch(api + "/git/commits", {
+            body: JSON.stringify({ content: newContent, encoding: "utf-8" })
+          }).then(function(r) { return check(r, "Failed to create blob"); })
+          .then(function(newBlob) {
+            return fetch(api + "/git/trees", {
               method: "POST", headers: hdrs,
-              body: JSON.stringify({ message: changeMsg, tree: tree.sha, parents: [ref.object.sha] })
-            }).then(function(r) { return r.json(); }).then(function(nc) {
-              return fetch(api + "/git/refs/heads/main", {
-                method: "PATCH", headers: hdrs,
-                body: JSON.stringify({ sha: nc.sha })
+              body: JSON.stringify({ base_tree: commit.tree.sha, tree: [{ path: GH_FILE, mode: "100644", type: "blob", sha: newBlob.sha }] })
+            }).then(function(r) { return check(r, "Failed to create tree"); })
+            .then(function(newTree) {
+              return fetch(api + "/git/commits", {
+                method: "POST", headers: hdrs,
+                body: JSON.stringify({ message: changeMsg, tree: newTree.sha, parents: [commitSha] })
+              }).then(function(r) { return check(r, "Failed to create commit"); })
+              .then(function(nc) {
+                return fetch(api + "/git/refs/heads/main", {
+                  method: "PATCH", headers: hdrs,
+                  body: JSON.stringify({ sha: nc.sha })
+                }).then(function(r) { return check(r, "Failed to update ref"); });
               });
             });
           });
         });
       });
     });
-  }).then(function(r) {
-    if (!r.ok) throw new Error("Push failed");
+  }).then(function() {
     DATA = newData;
+    SUBJECTS = Object.keys(DATA);
     toast(changeMsg);
     render();
-    // Trigger iMac sync if available
     fetch("http://127.0.0.1:18923/sync").catch(function(){});
   }).catch(function(e) {
     toast(e.message);
-    btn.textContent = btn.getAttribute("data-label") || "Push to GitHub";
+    btn.textContent = origLabel;
     btn.disabled = false;
   });
 }
