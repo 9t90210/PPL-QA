@@ -308,7 +308,7 @@ function renderTopic(app) {
     html += "<div style=\"text-align:right;padding:4px 0\"><span class=\"toggle\" id=\"toggleAllBtn\">Show All Answers</span></div>";
     for (var i = 0; i < qa.length; i++) {
       html += "<div class=\"qa-card\">";
-      html += "<button class=\"del-btn\" data-delq=\"" + escAttr(qa[i].q) + "\" title=\"Delete\">&times;</button>";
+      if (location.protocol !== "file:") html += "<button class=\"del-btn\" data-delq=\"" + escAttr(qa[i].q) + "\" title=\"Delete\">&times;</button>";
       html += "<div class=\"q\"><span class=\"qa-num\">Q" + (i + 1) + ".</span> " + escHtml(qa[i].q) + "</div>";
       html += "<span class=\"toggle\" data-tgl=\"1\">Show Answer</span>";
       html += "<div class=\"a\">" + escHtml(qa[i].a) + "</div>";
@@ -316,12 +316,14 @@ function renderTopic(app) {
     }
   }
 
-  html += "<div class=\"add-section\">";
-  html += "<h2>Add Q&amp;A</h2>";
-  html += "<textarea id=\"newQ\" placeholder=\"Question...\" rows=\"2\"></textarea>";
-  html += "<textarea id=\"newA\" placeholder=\"Answer...\" rows=\"2\"></textarea>";
-  html += "<button class=\"btn btn-primary\" id=\"addBtn\">+ Add Q&amp;A</button>";
-  html += "</div>";
+  if (location.protocol !== "file:") {
+    html += "<div class=\"add-section\">";
+    html += "<h2>Add Q&amp;A</h2>";
+    html += "<textarea id=\"newQ\" placeholder=\"Question...\" rows=\"2\"></textarea>";
+    html += "<textarea id=\"newA\" placeholder=\"Answer...\" rows=\"2\"></textarea>";
+    html += "<button class=\"btn btn-primary\" id=\"addBtn\">+ Add Q&amp;A</button>";
+    html += "</div>";
+  }
   app.innerHTML = html;
 
   document.getElementById("backSubject").onclick = function() { currentView = "subject"; render(); window.scrollTo(0, 0); };
@@ -360,8 +362,9 @@ function renderTopic(app) {
     };
   }
 
-  // Add Q&A — pushes directly to GitHub
-  document.getElementById("addBtn").onclick = function() {
+  // Add Q&A — pushes directly to GitHub (online only)
+  var addBtn = document.getElementById("addBtn");
+  if (addBtn) addBtn.onclick = function() {
     var q = document.getElementById("newQ").value.trim();
     var a = document.getElementById("newA").value.trim();
     if (!q || !a) { toast("Enter both Q and A"); return; }
