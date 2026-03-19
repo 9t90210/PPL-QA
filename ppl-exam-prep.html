@@ -162,7 +162,7 @@ function pushToGitHub(btn) {
       else if (ch === "}") { braceDepth--; if (braceDepth === 0) { jsonEnd = ci + 1; break; } }
     }
     if (jsonEnd === -1) throw new Error("Could not parse DATA boundaries");
-    var data = JSON.parse(content.substring(jsonStart, jsonEnd));
+    var newData = JSON.parse(content.substring(jsonStart, jsonEnd));
 
     var changes = 0;
     // Apply deletions first (match by question text)
@@ -172,9 +172,9 @@ function pushToGitHub(btn) {
       var parts = delKeys[i].split("::");
       var subj = parts[0];
       var topic = parts[1];
-      if (data[subj] && data[subj][topic]) {
+      if (newData[subj] && newData[subj][topic]) {
         var qTexts = deletedQA[delKeys[i]];
-        data[subj][topic] = data[subj][topic].filter(function(item) {
+        newData[subj][topic] = newData[subj][topic].filter(function(item) {
           if (qTexts.indexOf(item.q) !== -1) { changes++; return false; }
           return true;
         });
@@ -185,30 +185,35 @@ function pushToGitHub(btn) {
       var parts = keys[i].split("::");
       var subj = parts[0];
       var topic = parts[1];
-      if (data[subj] && data[subj][topic]) {
+      if (newData[subj] && newData[subj][topic]) {
         var items = userQA[keys[i]];
         for (var j = 0; j < items.length; j++) {
-          data[subj][topic].push(items[j]);
+          newData[subj][topic].push(items[j]);
           changes++;
         }
       }
     }
 
     if (changes === 0) {
+      // Nothing to push, but update local state to match GitHub
+      DATA = newData;
       saveUserQA({});
       saveDeletedQA({});
       toast("Already synced");
       btn.textContent = "Push to GitHub";
       btn.disabled = false;
-      setTimeout(function() { location.reload(); }, 1000);
+      render();
       return Promise.resolve("skip");
     }
 
     // Step 3: Replace DATA in content
     var replacements = {'\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2014': ' - ', '\u2013': ' - ', '\u00b0': ' degrees ', '\u2026': '...'};
-    var newDataStr = JSON.stringify(data);
+    var newDataStr = JSON.stringify(newData);
     for (var old in replacements) { newDataStr = newDataStr.split(old).join(replacements[old]); }
     var newContent = content.substring(0, dataStart) + "var DATA = " + newDataStr + ";" + content.substring(jsonEnd + 1);
+
+    // Save newData for after push succeeds
+    pushToGitHub._pendingData = newData;
 
     // Step 4: Push to GitHub
     return fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
@@ -231,12 +236,13 @@ function pushToGitHub(btn) {
     }
     return r.json();
   }).then(function(r) {
-    if (r === undefined) return;
-    // Clear localStorage QA and deletions after successful push
+    if (!r) return;
+    // Update in-memory DATA and clear localStorage — no page reload needed
+    DATA = pushToGitHub._pendingData;
     saveUserQA({});
     saveDeletedQA({});
-    toast("Pushed! Reloading...");
-    setTimeout(function() { location.reload(); }, 1500);
+    toast("Pushed successfully!");
+    render();
   }).catch(function(e) {
     toast(e.message);
     btn.textContent = "Push to GitHub";
