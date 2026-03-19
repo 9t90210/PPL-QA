@@ -148,9 +148,21 @@ function pushToGitHub(btn) {
     var content = atob(fileData.content.replace(/\n/g, ""));
 
     // Step 2: Parse DATA from the file, apply deletes, merge user QA
-    var dataMatch = content.match(/var DATA = (\{[\s\S]*?\});/);
-    if (!dataMatch) throw new Error("Could not find DATA in file");
-    var data = JSON.parse(dataMatch[1]);
+    var dataStart = content.indexOf("var DATA = {");
+    if (dataStart === -1) throw new Error("Could not find DATA in file");
+    var jsonStart = dataStart + 11;
+    var braceDepth = 0; var jsonEnd = -1; var inStr = false; var esc = false;
+    for (var ci = jsonStart; ci < content.length; ci++) {
+      var ch = content[ci];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") braceDepth++;
+      else if (ch === "}") { braceDepth--; if (braceDepth === 0) { jsonEnd = ci + 1; break; } }
+    }
+    if (jsonEnd === -1) throw new Error("Could not parse DATA boundaries");
+    var data = JSON.parse(content.substring(jsonStart, jsonEnd));
 
     var changes = 0;
     // Apply deletions first (match by question text)
@@ -182,13 +194,21 @@ function pushToGitHub(btn) {
       }
     }
 
-    if (changes === 0) throw new Error("No changes to push");
+    if (changes === 0) {
+      saveUserQA({});
+      saveDeletedQA({});
+      toast("Already synced");
+      btn.textContent = "Push to GitHub";
+      btn.disabled = false;
+      setTimeout(function() { location.reload(); }, 1000);
+      return Promise.resolve("skip");
+    }
 
     // Step 3: Replace DATA in content
     var replacements = {'\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2014': ' - ', '\u2013': ' - ', '\u00b0': ' degrees ', '\u2026': '...'};
     var newDataStr = JSON.stringify(data);
     for (var old in replacements) { newDataStr = newDataStr.split(old).join(replacements[old]); }
-    var newContent = content.replace(/var DATA = \{[\s\S]*?\};/, "var DATA = " + newDataStr + ";");
+    var newContent = content.substring(0, dataStart) + "var DATA = " + newDataStr + ";" + content.substring(jsonEnd + 1);
 
     // Step 4: Push to GitHub
     return fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
@@ -204,12 +224,14 @@ function pushToGitHub(btn) {
       })
     });
   }).then(function(r) {
+    if (r === "skip") return;
     if (!r.ok) {
       if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - cleared, try again"); }
       throw new Error("Push failed (HTTP " + r.status + ")");
     }
     return r.json();
-  }).then(function() {
+  }).then(function(r) {
+    if (r === undefined) return;
     // Clear localStorage QA and deletions after successful push
     saveUserQA({});
     saveDeletedQA({});
@@ -391,7 +413,7 @@ function renderTopic(app) {
     for (var i = 0; i < qa.length; i++) {
       var isUser = i >= baseCount;
       html += "<div class=\"qa-card\">";
-      html += "<button class=\"del-btn\" data-delq=\"" + escHtml(qa[i].q) + "\" data-user=\"" + (isUser ? "1" : "0") + "\" title=\"Delete\">&times;</button>";
+      html += "<button class=\"del-btn\" data-delq=\"" + escAttr(qa[i].q) + "\" data-user=\"" + (isUser ? "1" : "0") + "\" title=\"Delete\">&times;</button>";
       html += "<div class=\"q\"><span class=\"qa-num\">Q" + (i + 1) + ".</span> " + escHtml(qa[i].q) + "</div>";
       html += "<span class=\"toggle\" data-tgl=\"1\">Show Answer</span>";
       html += "<div class=\"a\">" + escHtml(qa[i].a) + "</div>";
@@ -471,6 +493,7 @@ function renderTopic(app) {
 
 // Helpers
 function escHtml(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escAttr(s) { return escHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 // Init
 render();
