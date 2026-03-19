@@ -216,8 +216,8 @@ function renderHome(app) {
   for (var i = 0; i < SUBJECTS.length; i++) totalTopics += getSubjectCount(SUBJECTS[i]);
   var totalQA = getTotalQA();
 
-  var html = "<h1>PPL Exam PREP</h1>";
-  html += "<div class=\"subtitle\">EASA &amp; CAAT Thailand ? Private Pilot License</div>";
+  var html = "<h1>PPL Exam PREP \u2708\uFE0F</h1>";
+  html += "<div class=\"subtitle\">EASA &amp; CAAT Thailand - Private Pilot License</div>";
   html += "<div class=\"stats\">";
   html += "<div class=\"stat\"><div class=\"num\">" + SUBJECTS.length + "</div>Subjects</div>";
   html += "<div class=\"stat\"><div class=\"num\">" + totalTopics + "</div>Topics</div>";
@@ -228,7 +228,7 @@ function renderHome(app) {
     var s = SUBJECTS[i];
     var count = getSubjectCount(s);
     var qaCount = getSubjectQACount(s);
-    html += "<li><a data-idx=" + i + ">" + s + "<span class=\"count\">" + count + " topics ? " + qaCount + " Q&A</span></a></li>";
+    html += "<li><a data-idx=" + i + ">" + s + "<span class=\"count\">" + count + " topics | " + qaCount + " Q&A</span></a></li>";
   }
   html += "</ul>";
   html += "<button class=\"btn btn-refresh\" id=\"refreshBtn\" style=\"margin-top:16px\">Refresh</button>";
@@ -288,7 +288,7 @@ function renderSubject(app) {
   var TOPICS = Object.keys(DATA[currentSubject] || {});
   var html = "<a class=\"back\" id=\"backHome\">Home</a>";
   html += "<h1>" + currentSubject + "</h1>";
-  html += "<div class=\"subtitle\">" + TOPICS.length + " topics ? " + getSubjectQACount(currentSubject) + " Q&amp;A loaded</div>";
+  html += "<div class=\"subtitle\">" + TOPICS.length + " topics | " + getSubjectQACount(currentSubject) + " Q&amp;A loaded</div>";
   html += "<ul class=\"list\">";
   for (var i = 0; i < TOPICS.length; i++) {
     var t = TOPICS[i];
