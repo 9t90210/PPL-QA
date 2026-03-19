@@ -249,64 +249,6 @@ function pushToGitHub(btn) {
     btn.disabled = false;
   });
 }
-
-
-    if (changes === 0) {
-      // Nothing to push, but update local state to match GitHub
-      DATA = newData;
-      saveUserQA({});
-      saveDeletedQA({});
-      toast("Already synced");
-      btn.textContent = "Push to GitHub";
-      btn.disabled = false;
-      render();
-      return Promise.resolve("skip");
-    }
-
-    // Step 3: Replace DATA in content
-    var replacements = {'\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2014': ' - ', '\u2013': ' - ', '\u00b0': ' degrees ', '\u2026': '...'};
-    var newDataStr = JSON.stringify(newData);
-    for (var old in replacements) { newDataStr = newDataStr.split(old).join(replacements[old]); }
-    var newContent = content.substring(0, dataStart) + "var DATA = " + newDataStr + ";" + content.substring(jsonEnd + 1);
-
-    // Save newData for after push succeeds
-    pushToGitHub._pendingData = newData;
-
-    // Step 4: Push to GitHub
-    return fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
-      method: "PUT",
-      headers: {
-        "Authorization": "token " + token,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        message: "Update " + changes + " Q&A from app",
-        content: btoa(unescape(encodeURIComponent(newContent))),
-        sha: sha
-      })
-    });
-  }).then(function(r) {
-    if (r === "skip") return;
-    if (!r.ok) {
-      if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - cleared, try again"); }
-      throw new Error("Push failed (HTTP " + r.status + ")");
-    }
-    return r.json();
-  }).then(function(r) {
-    if (!r) return;
-    // Update in-memory DATA and clear localStorage ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ no page reload needed
-    DATA = pushToGitHub._pendingData;
-    saveUserQA({});
-    saveDeletedQA({});
-    toast("Pushed successfully!");
-    render();
-  }).catch(function(e) {
-    toast(e.message);
-    btn.textContent = "Push to GitHub";
-    btn.disabled = false;
-  });
-}
-
 // Stats
 function getTotalQA() {
   var total = 0;
