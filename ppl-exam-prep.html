@@ -239,11 +239,8 @@ function pushToGitHub(btn) {
 // Stats
 function getTotalQA() {
   var total = 0;
-  var user = getUserQA();
   for (var s in DATA) for (var t in DATA[s]) {
-    total += DATA[s][t].length;
-    var key = s + "::" + t;
-    total += (user[key] || []).length;
+    total += getQA(s, t).length;
   }
   return total;
 }
@@ -252,11 +249,8 @@ function getSubjectCount(subject) {
 }
 function getSubjectQACount(subject) {
   var total = 0;
-  var user = getUserQA();
   for (var t in DATA[subject]) {
-    total += DATA[subject][t].length;
-    var key = subject + "::" + t;
-    total += (user[key] || []).length;
+    total += getQA(subject, t).length;
   }
   return total;
 }
