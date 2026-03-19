@@ -76,6 +76,95 @@ function addQA(subject, topic, q, a) {
   saveUserQA(user);
 }
 
+var GH_TOKEN_KEY = "ppl_gh_token";
+var GH_REPO = "9t90210/PPL-QA";
+var GH_FILE = "ppl-exam-prep.html";
+
+function getGHToken() { return localStorage.getItem(GH_TOKEN_KEY) || ""; }
+function setGHToken(t) { localStorage.setItem(GH_TOKEN_KEY, t); }
+
+function pushToGitHub(btn) {
+  var token = getGHToken();
+  if (!token) {
+    token = prompt("Enter your GitHub Personal Access Token (needs public_repo scope):");
+    if (!token) return;
+    setGHToken(token);
+  }
+  var userQA = getUserQA();
+  var keys = Object.keys(userQA);
+  if (keys.length === 0) { toast("No new Q&A to push"); return; }
+
+  btn.textContent = "Pushing...";
+  btn.disabled = true;
+
+  // Step 1: Get current file from GitHub
+  fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
+    headers: { "Authorization": "token " + token }
+  }).then(function(r) {
+    if (!r.ok) throw new Error("Failed to fetch file (check token)");
+    return r.json();
+  }).then(function(fileData) {
+    var sha = fileData.sha;
+    var content = atob(fileData.content.replace(/\n/g, ""));
+
+    // Step 2: Parse DATA from the file and merge user QA
+    var dataMatch = content.match(/var DATA = (\{[\s\S]*?\});/);
+    if (!dataMatch) throw new Error("Could not find DATA in file");
+    var data = JSON.parse(dataMatch[1]);
+
+    var merged = 0;
+    for (var i = 0; i < keys.length; i++) {
+      var parts = keys[i].split("::");
+      var subj = parts[0];
+      var topic = parts[1];
+      if (data[subj] && data[subj][topic]) {
+        var items = userQA[keys[i]];
+        for (var j = 0; j < items.length; j++) {
+          data[subj][topic].push(items[j]);
+          merged++;
+        }
+      }
+    }
+
+    if (merged === 0) throw new Error("No matching topics found to merge");
+
+    // Step 3: Replace DATA in content
+    var replacements = {'\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2014': ' - ', '\u2013': ' - ', '\u00b0': ' degrees ', '\u2026': '...'};
+    var newDataStr = JSON.stringify(data);
+    for (var old in replacements) { newDataStr = newDataStr.split(old).join(replacements[old]); }
+    var newContent = content.replace(/var DATA = \{[\s\S]*?\};/, "var DATA = " + newDataStr + ";");
+
+    // Step 4: Push to GitHub
+    return fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
+      method: "PUT",
+      headers: {
+        "Authorization": "token " + token,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: "Add " + merged + " Q&A from app",
+        content: btoa(unescape(encodeURIComponent(newContent))),
+        sha: sha
+      })
+    });
+  }).then(function(r) {
+    if (!r.ok) {
+      if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - cleared, try again"); }
+      throw new Error("Push failed (HTTP " + r.status + ")");
+    }
+    return r.json();
+  }).then(function() {
+    // Clear localStorage QA after successful push
+    saveUserQA({});
+    toast("Pushed! Reloading...");
+    setTimeout(function() { location.reload(); }, 1500);
+  }).catch(function(e) {
+    toast(e.message);
+    btn.textContent = "Push to GitHub";
+    btn.disabled = false;
+  });
+}
+
 // Stats
 function getTotalQA() {
   var total = 0;
@@ -143,10 +232,42 @@ function renderHome(app) {
   }
   html += "</ul>";
   html += "<button class=\"btn btn-refresh\" id=\"refreshBtn\" style=\"margin-top:16px\">Refresh</button>";
+  html += "<button class=\"btn btn-primary\" id=\"syncBtn\" style=\"margin-top:10px\">Sync from GitHub</button>";
+  var userQA = getUserQA();
+  var pendingCount = 0;
+  for (var k in userQA) { if (userQA.hasOwnProperty(k)) pendingCount += userQA[k].length; }
+  if (pendingCount > 0) {
+    html += "<button class=\"btn btn-primary\" id=\"pushBtn\" style=\"margin-top:10px;background:var(--green)\">Push " + pendingCount + " Q&amp;A to GitHub</button>";
+  }
   app.innerHTML = html;
 
   // Bind events
   document.getElementById("refreshBtn").onclick = function() { toast("Content is up to date"); };
+  document.getElementById("syncBtn").onclick = function() {
+    var btn = this;
+    btn.textContent = "Syncing...";
+    btn.disabled = true;
+    fetch("http://127.0.0.1:18923/sync").then(function(r) { return r.json(); }).then(function(d) {
+      if (d.success) {
+        if (d.message.indexOf("Already up to date") >= 0) {
+          toast("Already up to date");
+        } else {
+          toast("Synced! Reloading...");
+          setTimeout(function() { location.reload(); }, 1500);
+        }
+      } else {
+        toast("Sync failed: " + d.message);
+      }
+      btn.textContent = "Sync from GitHub";
+      btn.disabled = false;
+    }).catch(function() {
+      toast("Sync server not running");
+      btn.textContent = "Sync from GitHub";
+      btn.disabled = false;
+    });
+  };
+  var pushBtn = document.getElementById("pushBtn");
+  if (pushBtn) { pushBtn.onclick = function() { pushToGitHub(this); }; }
   var items = app.querySelectorAll("[data-idx]");
   for (var i = 0; i < items.length; i++) {
     items[i].onclick = function() {
