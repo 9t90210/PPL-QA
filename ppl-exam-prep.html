@@ -75,17 +75,26 @@ function saveDeletedQA(data) {
   localStorage.setItem(DELETED_QA_KEY, JSON.stringify(data));
 }
 
-// Get visible QA for a topic: base DATA minus deletions, plus user-added
+// Get visible QA for a topic: base DATA minus deletions, plus user-added (deduplicated)
 function getQA(subject, topic) {
   var base = DATA[subject] && DATA[subject][topic] ? DATA[subject][topic] : [];
   var key = subject + "::" + topic;
   var delList = (getDeletedQA()[key] || []);
   var filtered = [];
+  var seenQs = [];
   for (var i = 0; i < base.length; i++) {
-    if (delList.indexOf(base[i].q) === -1) filtered.push(base[i]);
+    if (delList.indexOf(base[i].q) === -1) {
+      filtered.push(base[i]);
+      seenQs.push(base[i].q);
+    }
   }
   var added = getUserQA()[key] || [];
-  return filtered.concat(added);
+  for (var i = 0; i < added.length; i++) {
+    if (seenQs.indexOf(added[i].q) === -1) {
+      filtered.push(added[i]);
+    }
+  }
+  return filtered;
 }
 
 function addQA(subject, topic, q, a) {
@@ -113,6 +122,40 @@ function deleteQA(subject, topic, qText, isUserAdded) {
     saveDeletedQA(deleted);
   }
 }
+
+// Clean up localStorage items that are already reflected in base DATA
+function syncLocalStorage() {
+  // Remove user-added QA that already exists in base DATA (was pushed and file updated)
+  var user = getUserQA();
+  var changed = false;
+  for (var key in user) {
+    if (!user.hasOwnProperty(key)) continue;
+    var parts = key.split("::");
+    var base = DATA[parts[0]] && DATA[parts[0]][parts[1]] ? DATA[parts[0]][parts[1]] : [];
+    var baseQs = [];
+    for (var i = 0; i < base.length; i++) baseQs.push(base[i].q);
+    user[key] = user[key].filter(function(item) { return baseQs.indexOf(item.q) === -1; });
+    if (user[key].length === 0) { delete user[key]; changed = true; }
+    else changed = true;
+  }
+  if (changed) saveUserQA(user);
+
+  // Remove deletion records for QA that no longer exists in base DATA (was pushed and file updated)
+  var deleted = getDeletedQA();
+  changed = false;
+  for (var key in deleted) {
+    if (!deleted.hasOwnProperty(key)) continue;
+    var parts = key.split("::");
+    var base = DATA[parts[0]] && DATA[parts[0]][parts[1]] ? DATA[parts[0]][parts[1]] : [];
+    var baseQs = [];
+    for (var i = 0; i < base.length; i++) baseQs.push(base[i].q);
+    deleted[key] = deleted[key].filter(function(q) { return baseQs.indexOf(q) !== -1; });
+    if (deleted[key].length === 0) { delete deleted[key]; changed = true; }
+    else changed = true;
+  }
+  if (changed) saveDeletedQA(deleted);
+}
+syncLocalStorage();
 
 var GH_TOKEN_KEY = "ppl_gh_token";
 var GH_REPO = "9t90210/PPL-QA";
@@ -197,8 +240,7 @@ function pushToGitHub(btn) {
     if (changes === 0) {
       // Nothing to push, but update local state to match GitHub
       DATA = newData;
-      saveUserQA({});
-      saveDeletedQA({});
+      DATA = newData;
       toast("Already synced");
       btn.textContent = "Push to GitHub";
       btn.disabled = false;
@@ -237,12 +279,15 @@ function pushToGitHub(btn) {
     return r.json();
   }).then(function(r) {
     if (!r) return;
-    // Update in-memory DATA and clear localStorage — no page reload needed
+    // Update in-memory DATA with the pushed version
+    // Update DATA in memory. Don't touch localStorage — it stays as
+    // a safety net until the actual file updates. syncLocalStorage()
+    // on next page load will clean up once the file DATA has the items.
     DATA = pushToGitHub._pendingData;
-    saveUserQA({});
-    saveDeletedQA({});
     toast("Pushed successfully!");
     render();
+    // Also trigger iMac sync if available
+    fetch("http://127.0.0.1:18923/sync").catch(function(){});
   }).catch(function(e) {
     toast(e.message);
     btn.textContent = "Push to GitHub";
@@ -316,10 +361,28 @@ function renderHome(app) {
   }
   var userQA = getUserQA();
   var pendingAdd = 0;
-  for (var k in userQA) { if (userQA.hasOwnProperty(k)) pendingAdd += userQA[k].length; }
+  for (var k in userQA) {
+    if (!userQA.hasOwnProperty(k)) continue;
+    var parts = k.split("::");
+    var base = DATA[parts[0]] && DATA[parts[0]][parts[1]] ? DATA[parts[0]][parts[1]] : [];
+    var baseQs = [];
+    for (var bi = 0; bi < base.length; bi++) baseQs.push(base[bi].q);
+    for (var ui = 0; ui < userQA[k].length; ui++) {
+      if (baseQs.indexOf(userQA[k][ui].q) === -1) pendingAdd++;
+    }
+  }
   var delQA = getDeletedQA();
   var pendingDel = 0;
-  for (var k in delQA) { if (delQA.hasOwnProperty(k)) pendingDel += delQA[k].length; }
+  for (var k in delQA) {
+    if (!delQA.hasOwnProperty(k)) continue;
+    var parts = k.split("::");
+    var base = DATA[parts[0]] && DATA[parts[0]][parts[1]] ? DATA[parts[0]][parts[1]] : [];
+    var baseQs = [];
+    for (var bi = 0; bi < base.length; bi++) baseQs.push(base[bi].q);
+    for (var di = 0; di < delQA[k].length; di++) {
+      if (baseQs.indexOf(delQA[k][di]) !== -1) pendingDel++;
+    }
+  }
   if (pendingAdd > 0 || pendingDel > 0) {
     var label = "Push";
     var parts = [];
