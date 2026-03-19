@@ -232,7 +232,9 @@ function renderHome(app) {
   }
   html += "</ul>";
   html += "<button class=\"btn btn-refresh\" id=\"refreshBtn\" style=\"margin-top:16px\">Refresh</button>";
-  html += "<button class=\"btn btn-primary\" id=\"syncBtn\" style=\"margin-top:10px\">Sync from GitHub</button>";
+  if (location.protocol === "file:") {
+    html += "<button class=\"btn btn-primary\" id=\"syncBtn\" style=\"margin-top:10px\">Sync from GitHub</button>";
+  }
   var userQA = getUserQA();
   var pendingCount = 0;
   for (var k in userQA) { if (userQA.hasOwnProperty(k)) pendingCount += userQA[k].length; }
@@ -243,29 +245,32 @@ function renderHome(app) {
 
   // Bind events
   document.getElementById("refreshBtn").onclick = function() { toast("Content is up to date"); };
-  document.getElementById("syncBtn").onclick = function() {
-    var btn = this;
-    btn.textContent = "Syncing...";
-    btn.disabled = true;
-    fetch("http://127.0.0.1:18923/sync").then(function(r) { return r.json(); }).then(function(d) {
-      if (d.success) {
-        if (d.message.indexOf("Already up to date") >= 0) {
-          toast("Already up to date");
+  var syncBtn = document.getElementById("syncBtn");
+  if (syncBtn) {
+    syncBtn.onclick = function() {
+      var btn = this;
+      btn.textContent = "Syncing...";
+      btn.disabled = true;
+      fetch("http://127.0.0.1:18923/sync").then(function(r) { return r.json(); }).then(function(d) {
+        if (d.success) {
+          if (d.message.indexOf("Already up to date") >= 0) {
+            toast("Already up to date");
+          } else {
+            toast("Synced! Reloading...");
+            setTimeout(function() { location.reload(); }, 1500);
+          }
         } else {
-          toast("Synced! Reloading...");
-          setTimeout(function() { location.reload(); }, 1500);
+          toast("Sync failed: " + d.message);
         }
-      } else {
-        toast("Sync failed: " + d.message);
-      }
-      btn.textContent = "Sync from GitHub";
-      btn.disabled = false;
-    }).catch(function() {
-      toast("Sync server not running");
-      btn.textContent = "Sync from GitHub";
-      btn.disabled = false;
-    });
-  };
+        btn.textContent = "Sync from GitHub";
+        btn.disabled = false;
+      }).catch(function() {
+        toast("Sync server not running");
+        btn.textContent = "Sync from GitHub";
+        btn.disabled = false;
+      });
+    };
+  }
   var pushBtn = document.getElementById("pushBtn");
   if (pushBtn) { pushBtn.onclick = function() { pushToGitHub(this); }; }
   var items = app.querySelectorAll("[data-idx]");
