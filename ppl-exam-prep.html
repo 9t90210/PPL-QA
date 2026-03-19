@@ -137,62 +137,119 @@ function pushToGitHub(btn) {
   btn.textContent = "Pushing...";
   btn.disabled = true;
 
-  // Step 1: Get current file from GitHub
-  fetch("https://api.github.com/repos/" + GH_REPO + "/contents/" + GH_FILE, {
-    headers: { "Authorization": "token " + token }
-  }).then(function(r) {
-    if (!r.ok) throw new Error("Failed to fetch file (check token)");
-    return r.json();
-  }).then(function(fileData) {
-    var sha = fileData.sha;
-    var content = atob(fileData.content.replace(/\n/g, ""));
+  // Step 1: Apply changes to a deep clone of in-memory DATA
+  var newData = JSON.parse(JSON.stringify(DATA));
+  var changes = 0;
 
-    // Step 2: Parse DATA from the file, apply deletes, merge user QA
+  // Apply deletions (match by question text)
+  for (var dk in delQAData) {
+    if (!delQAData.hasOwnProperty(dk)) continue;
+    var dp = dk.split("::"); var ds = dp[0]; var dt = dp[1];
+    if (newData[ds] && newData[ds][dt]) {
+      var qTexts = delQAData[dk];
+      newData[ds][dt] = newData[ds][dt].filter(function(item) {
+        if (qTexts.indexOf(item.q) !== -1) { changes++; return false; }
+        return true;
+      });
+    }
+  }
+
+  // Merge new QA (skip duplicates)
+  for (var i = 0; i < keys.length; i++) {
+    var mp = keys[i].split("::"); var ms = mp[0]; var mt = mp[1];
+    if (newData[ms] && newData[ms][mt]) {
+      var items = userQA[keys[i]];
+      for (var j = 0; j < items.length; j++) {
+        var dup = false;
+        for (var k = 0; k < newData[ms][mt].length; k++) {
+          if (newData[ms][mt][k].q === items[j].q) { dup = true; break; }
+        }
+        if (!dup) { newData[ms][mt].push(items[j]); changes++; }
+      }
+    }
+  }
+
+  if (changes === 0) {
+    toast("No changes to push"); btn.textContent = "Push to GitHub"; btn.disabled = false; return;
+  }
+
+  // Step 2: Fetch current raw file to use as template
+  fetch("https://raw.githubusercontent.com/" + GH_REPO + "/main/" + GH_FILE + "?t=" + Date.now())
+  .then(function(r) {
+    if (!r.ok) throw new Error("Failed to fetch file");
+    return r.text();
+  }).then(function(content) {
+    // Replace DATA in the fetched file
     var dataStart = content.indexOf("var DATA = {");
     if (dataStart === -1) throw new Error("Could not find DATA in file");
     var jsonStart = dataStart + 11;
-    var braceDepth = 0; var jsonEnd = -1; var inStr = false; var esc = false;
+    var bd2 = 0; var je2 = -1; var ins2 = false; var esc2 = false;
     for (var ci = jsonStart; ci < content.length; ci++) {
       var ch = content[ci];
-      if (esc) { esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      if (ch === '"') { inStr = !inStr; continue; }
-      if (inStr) continue;
-      if (ch === "{") braceDepth++;
-      else if (ch === "}") { braceDepth--; if (braceDepth === 0) { jsonEnd = ci + 1; break; } }
+      if (esc2) { esc2 = false; continue; }
+      if (ch === "\\" && ins2) { esc2 = true; continue; }
+      if (ch === '"') { ins2 = !ins2; continue; }
+      if (ins2) continue;
+      if (ch === "{") bd2++;
+      else if (ch === "}") { bd2--; if (bd2 === 0) { je2 = ci + 1; break; } }
     }
-    if (jsonEnd === -1) throw new Error("Could not parse DATA boundaries");
-    var newData = JSON.parse(content.substring(jsonStart, jsonEnd));
+    if (je2 === -1) throw new Error("Could not parse DATA");
+    var semi = (content[je2] === ";") ? je2 + 1 : je2;
+    var newDataStr = JSON.stringify(newData);
+    var newContent = content.substring(0, dataStart) + "var DATA = " + newDataStr + ";" + content.substring(semi);
 
-    var changes = 0;
-    // Apply deletions first (match by question text)
-    var deletedQA = getDeletedQA();
-    var delKeys = Object.keys(deletedQA);
-    for (var i = 0; i < delKeys.length; i++) {
-      var parts = delKeys[i].split("::");
-      var subj = parts[0];
-      var topic = parts[1];
-      if (newData[subj] && newData[subj][topic]) {
-        var qTexts = deletedQA[delKeys[i]];
-        newData[subj][topic] = newData[subj][topic].filter(function(item) {
-          if (qTexts.indexOf(item.q) !== -1) { changes++; return false; }
-          return true;
+    // Step 3: Push via Git Data API (handles files >1MB)
+    var api = "https://api.github.com/repos/" + GH_REPO;
+    var hdrs = { "Authorization": "token " + token, "Content-Type": "application/json" };
+
+    return fetch(api + "/git/blobs", {
+      method: "POST", headers: hdrs,
+      body: JSON.stringify({ content: newContent, encoding: "utf-8" })
+    }).then(function(r) {
+      if (!r.ok) {
+        if (r.status === 401) { setGHToken(""); throw new Error("Invalid token - cleared, try again"); }
+        throw new Error("Blob create failed");
+      }
+      return r.json();
+    }).then(function(blob) {
+      return fetch(api + "/git/refs/heads/main", { headers: hdrs })
+      .then(function(r) { return r.json(); })
+      .then(function(ref) {
+        return fetch(api + "/git/commits/" + ref.object.sha, { headers: hdrs })
+        .then(function(r) { return r.json(); })
+        .then(function(commit) {
+          return fetch(api + "/git/trees", {
+            method: "POST", headers: hdrs,
+            body: JSON.stringify({ base_tree: commit.tree.sha, tree: [{ path: GH_FILE, mode: "100644", type: "blob", sha: blob.sha }] })
+          }).then(function(r) { return r.json(); })
+          .then(function(tree) {
+            return fetch(api + "/git/commits", {
+              method: "POST", headers: hdrs,
+              body: JSON.stringify({ message: "Update " + changes + " Q&A from app", tree: tree.sha, parents: [ref.object.sha] })
+            }).then(function(r) { return r.json(); })
+            .then(function(nc) {
+              return fetch(api + "/git/refs/heads/main", {
+                method: "PATCH", headers: hdrs,
+                body: JSON.stringify({ sha: nc.sha })
+              });
+            });
+          });
         });
-      }
-    }
-    // Merge new QA
-    for (var i = 0; i < keys.length; i++) {
-      var parts = keys[i].split("::");
-      var subj = parts[0];
-      var topic = parts[1];
-      if (newData[subj] && newData[subj][topic]) {
-        var items = userQA[keys[i]];
-        for (var j = 0; j < items.length; j++) {
-          newData[subj][topic].push(items[j]);
-          changes++;
-        }
-      }
-    }
+      });
+    });
+  }).then(function(r) {
+    if (!r.ok) throw new Error("Push failed");
+    DATA = newData;
+    toast("Pushed successfully!");
+    render();
+    fetch("http://127.0.0.1:18923/sync").catch(function(){});
+  }).catch(function(e) {
+    toast(e.message);
+    btn.textContent = "Push to GitHub";
+    btn.disabled = false;
+  });
+}
+
 
     if (changes === 0) {
       // Nothing to push, but update local state to match GitHub
