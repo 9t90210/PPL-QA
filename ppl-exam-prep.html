@@ -43,6 +43,8 @@ h2{font-size:18px;font-weight:600;padding:12px 0 6px}
 .hidden{display:none}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;z-index:100;opacity:0;transition:opacity 0.3s}
 .toast.show{opacity:1}
+.del-btn{float:right;background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0 4px;opacity:0.5}
+.del-btn:active{opacity:1}
 </style>
 </head>
 <body>
@@ -63,10 +65,16 @@ function saveUserQA(data) {
 }
 function getQA(subject, topic) {
   var base = DATA[subject] && DATA[subject][topic] ? DATA[subject][topic] : [];
-  var user = getUserQA();
+  var deleted = getDeletedQA();
   var key = subject + "::" + topic;
+  var delList = deleted[key] || [];
+  var filtered = [];
+  for (var i = 0; i < base.length; i++) {
+    if (delList.indexOf(i) === -1) filtered.push(base[i]);
+  }
+  var user = getUserQA();
   var added = user[key] || [];
-  return base.concat(added);
+  return filtered.concat(added);
 }
 function addQA(subject, topic, q, a) {
   var user = getUserQA();
@@ -74,6 +82,48 @@ function addQA(subject, topic, q, a) {
   if (!user[key]) user[key] = [];
   user[key].push({q: q, a: a});
   saveUserQA(user);
+}
+
+var DELETED_QA_KEY = "ppl_deleted_qa";
+function getDeletedQA() {
+  try { return JSON.parse(localStorage.getItem(DELETED_QA_KEY) || "{}"); } catch(e) { return {}; }
+}
+function saveDeletedQA(data) {
+  localStorage.setItem(DELETED_QA_KEY, JSON.stringify(data));
+}
+function deleteQA(subject, topic, idx) {
+  var key = subject + "::" + topic;
+  var base = DATA[subject] && DATA[subject][topic] ? DATA[subject][topic] : [];
+  var deleted = getDeletedQA();
+  if (!deleted[key]) deleted[key] = [];
+  var user = getUserQA();
+  var userItems = user[key] || [];
+  // Filter out deleted base QA to get actual base count
+  var baseVisible = 0;
+  for (var i = 0; i < base.length; i++) {
+    if (deleted[key].indexOf(i) === -1) baseVisible++;
+  }
+  // Map visible idx back to source
+  var visibleIdx = -1;
+  // Walk through base items first
+  for (var i = 0; i < base.length; i++) {
+    if (deleted[key].indexOf(i) === -1) {
+      visibleIdx++;
+      if (visibleIdx === idx) {
+        // Delete from base: add to deleted list
+        deleted[key].push(i);
+        saveDeletedQA(deleted);
+        return;
+      }
+    }
+  }
+  // Then user items
+  var userIdx = idx - baseVisible;
+  if (userIdx >= 0 && userIdx < userItems.length) {
+    userItems.splice(userIdx, 1);
+    user[key] = userItems;
+    saveUserQA(user);
+  }
 }
 
 var GH_TOKEN_KEY = "ppl_gh_token";
@@ -92,7 +142,9 @@ function pushToGitHub(btn) {
   }
   var userQA = getUserQA();
   var keys = Object.keys(userQA);
-  if (keys.length === 0) { toast("No new Q&A to push"); return; }
+  var delQAData = getDeletedQA();
+  var hasDeletes = Object.keys(delQAData).length > 0;
+  if (keys.length === 0 && !hasDeletes) { toast("No changes to push"); return; }
 
   btn.textContent = "Pushing...";
   btn.disabled = true;
@@ -107,12 +159,30 @@ function pushToGitHub(btn) {
     var sha = fileData.sha;
     var content = atob(fileData.content.replace(/\n/g, ""));
 
-    // Step 2: Parse DATA from the file and merge user QA
+    // Step 2: Parse DATA from the file, apply deletes, merge user QA
     var dataMatch = content.match(/var DATA = (\{[\s\S]*?\});/);
     if (!dataMatch) throw new Error("Could not find DATA in file");
     var data = JSON.parse(dataMatch[1]);
 
-    var merged = 0;
+    var changes = 0;
+    // Apply deletions first
+    var deletedQA = getDeletedQA();
+    var delKeys = Object.keys(deletedQA);
+    for (var i = 0; i < delKeys.length; i++) {
+      var parts = delKeys[i].split("::");
+      var subj = parts[0];
+      var topic = parts[1];
+      if (data[subj] && data[subj][topic]) {
+        var indices = deletedQA[delKeys[i]].slice().sort(function(a,b){return b-a;});
+        for (var j = 0; j < indices.length; j++) {
+          if (indices[j] < data[subj][topic].length) {
+            data[subj][topic].splice(indices[j], 1);
+            changes++;
+          }
+        }
+      }
+    }
+    // Merge new QA
     for (var i = 0; i < keys.length; i++) {
       var parts = keys[i].split("::");
       var subj = parts[0];
@@ -121,12 +191,12 @@ function pushToGitHub(btn) {
         var items = userQA[keys[i]];
         for (var j = 0; j < items.length; j++) {
           data[subj][topic].push(items[j]);
-          merged++;
+          changes++;
         }
       }
     }
 
-    if (merged === 0) throw new Error("No matching topics found to merge");
+    if (changes === 0) throw new Error("No changes to push");
 
     // Step 3: Replace DATA in content
     var replacements = {'\u2019': "'", '\u2018': "'", '\u201c': '"', '\u201d': '"', '\u2014': ' - ', '\u2013': ' - ', '\u00b0': ' degrees ', '\u2026': '...'};
@@ -154,8 +224,9 @@ function pushToGitHub(btn) {
     }
     return r.json();
   }).then(function() {
-    // Clear localStorage QA after successful push
+    // Clear localStorage QA and deletions after successful push
     saveUserQA({});
+    saveDeletedQA({});
     toast("Pushed! Reloading...");
     setTimeout(function() { location.reload(); }, 1500);
   }).catch(function(e) {
@@ -236,10 +307,18 @@ function renderHome(app) {
     html += "<button class=\"btn btn-primary\" id=\"syncBtn\" style=\"margin-top:10px\">Sync from GitHub</button>";
   }
   var userQA = getUserQA();
-  var pendingCount = 0;
-  for (var k in userQA) { if (userQA.hasOwnProperty(k)) pendingCount += userQA[k].length; }
-  if (pendingCount > 0) {
-    html += "<button class=\"btn btn-primary\" id=\"pushBtn\" style=\"margin-top:10px;background:var(--green)\">Push " + pendingCount + " Q&amp;A to GitHub</button>";
+  var pendingAdd = 0;
+  for (var k in userQA) { if (userQA.hasOwnProperty(k)) pendingAdd += userQA[k].length; }
+  var delQA = getDeletedQA();
+  var pendingDel = 0;
+  for (var k in delQA) { if (delQA.hasOwnProperty(k)) pendingDel += delQA[k].length; }
+  if (pendingAdd > 0 || pendingDel > 0) {
+    var label = "Push";
+    var parts = [];
+    if (pendingAdd > 0) parts.push("+" + pendingAdd);
+    if (pendingDel > 0) parts.push("-" + pendingDel);
+    label += " " + parts.join(", ") + " Q&amp;A to GitHub";
+    html += "<button class=\"btn btn-primary\" id=\"pushBtn\" style=\"margin-top:10px;background:var(--green)\">" + label + "</button>";
   }
   app.innerHTML = html;
 
@@ -323,6 +402,7 @@ function renderTopic(app) {
     html += "<div style=\"text-align:right;padding:4px 0\"><span class=\"toggle\" id=\"toggleAllBtn\">Show All Answers</span></div>";
     for (var i = 0; i < qa.length; i++) {
       html += "<div class=\"qa-card\">";
+      html += "<button class=\"del-btn\" data-del=\"" + i + "\" title=\"Delete\">&times;</button>";
       html += "<div class=\"q\"><span class=\"qa-num\">Q" + (i + 1) + ".</span> " + escHtml(qa[i].q) + "</div>";
       html += "<span class=\"toggle\" data-tgl=\"1\">Show Answer</span>";
       html += "<div class=\"a\">" + escHtml(qa[i].a) + "</div>";
@@ -384,6 +464,19 @@ function renderTopic(app) {
     render();
     setTimeout(function() { window.scrollTo(0, document.body.scrollHeight); }, 100);
   };
+
+  // Delete Q&A
+  var delBtns = app.querySelectorAll("[data-del]");
+  for (var i = 0; i < delBtns.length; i++) {
+    delBtns[i].onclick = function() {
+      var idx = parseInt(this.getAttribute("data-del"));
+      if (confirm("Delete this Q&A?")) {
+        deleteQA(currentSubject, currentTopic, idx);
+        toast("Q&A deleted");
+        render();
+      }
+    };
+  }
 }
 
 // Helpers
