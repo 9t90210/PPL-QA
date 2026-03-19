@@ -212,7 +212,7 @@ function pushToGitHub(btn) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        message: "Add " + merged + " Q&A from app",
+        message: "Update " + changes + " Q&A from app",
         content: btoa(unescape(encodeURIComponent(newContent))),
         sha: sha
       })
